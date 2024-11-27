@@ -173,10 +173,10 @@ ORDER BY count DESC;
 SELECT e.uuid, e.first_name || ' ' || e.last_name full_name, e.email, e.job_title, o.name company, c.name country, s.name state, 
 e2.first_name boss_name 
 FROM employees e 
-LEFT JOIN offices o ON e.office_id = o.id 
-LEFT JOIN countries c ON o.country_id = c.id 
-LEFT JOIN states s ON o.state_id = s.id 
-LEFT JOIN employees e2 ON e.supervisor_id = e2.id
+INNER JOIN offices o ON e.office_id = o.id 
+INNER JOIN countries c ON o.country_id = c.id 
+INNER JOIN states s ON o.state_id = s.id 
+INNER JOIN employees e2 ON e.supervisor_id = e2.id
 WHERE e2.first_name IS NOT NULL;
 ```
 
