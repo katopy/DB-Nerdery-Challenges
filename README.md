@@ -79,83 +79,260 @@ Now it's your turn to write SQL queries to achieve the following results (You ne
 1. Total money of all the accounts group by types.
 
 ```
-Your query here
+select a.type, sum(mount) from accounts a group by a.type 
 ```
 
 
 2. How many users with at least 2 `CURRENT_ACCOUNT`.
 
 ```
-Your query here
+select u.name, u.id, count(a.id) count from users u left join accounts a on u.id = a.user_id  group by u.id having count(a.id) > 1
 ```
 
 
 3. List the top five accounts with more money.
 
 ```
-Your query here
+select a.id, a.mount from accounts a order by a.mount desc limit 5;
 ```
 
 
 4. Get the three users with the most money after making movements.
 
 ```
-Your query here
+WITH sum_summary AS (
+    WITH movements_summary AS (
+        SELECT
+            a.id AS account_id,
+            a.mount as original_amount,
+            
+            m.type,
+            CASE
+                WHEN m.type = 'IN' THEN m.mount
+                WHEN m.type NOT IN ('IN', 'TRANSFER') THEN -m.mount
+                WHEN m.type = 'TRANSFER' AND m.account_from = a.id THEN -m.mount
+                WHEN m.type = 'TRANSFER' AND m.account_to = a.id THEN m.mount
+                ELSE a.mount
+            END AS after_movements
+        FROM
+            accounts a
+        INNER JOIN movements m
+            ON a.id = m.account_to OR a.id = m.account_from
+        ORDER BY
+            after_movements
+    )
+    SELECT account_id, original_amount+ SUM(after_movements) AS final_movements
+    FROM movements_summary
+    GROUP BY account_id, original_amount
+    ORDER BY final_movements DESC
+)
+SELECT u.id, sum(final_movements) as result
+FROM sum_summary ss
+inner join accounts a 
+on ss.account_id = a.id
+inner join users u
+on a.user_id  = u.id
+group by u.id
+order by result desc limit 3
 ```
 
 
 5. In this part you need to create a transaction with the following steps:
 
     a. First, get the ammount for the account `3b79e403-c788-495a-a8ca-86ad7643afaf` and `fd244313-36e5-4a17-a27c-f8265bc46590` after all their movements.
-    b. Add a new movement with the information:
-        from: `3b79e403-c788-495a-a8ca-86ad7643afaf` make a transfer to `fd244313-36e5-4a17-a27c-f8265bc46590`
-        mount: 50.75
 
-    c. Add a new movement with the information:
-        from: `3b79e403-c788-495a-a8ca-86ad7643afaf` 
-        type: OUT
-        mount: 731823.56
+CREATE OR REPLACE FUNCTION get_balance_after_moves(p_account_id UUID)
+RETURNS DOUBLE PRECISION AS $$
+DECLARE
+    balance DOUBLE PRECISION;
+BEGIN
+    WITH sum_summary AS (
+        WITH movements_summary AS (
+            SELECT
+                a.id AS account_id,
+                a.mount AS original_amount,
+                m.type,
+                CASE
+                    WHEN m.type = 'IN' THEN m.mount
+                    WHEN m.type NOT IN ('IN', 'TRANSFER') THEN -m.mount
+                    WHEN m.type = 'TRANSFER' AND m.account_from = a.id THEN -m.mount
+                    WHEN m.type = 'TRANSFER' AND m.account_to = a.id THEN m.mount
+                    ELSE 0
+                END AS after_movements
+            FROM
+                accounts a
+            LEFT JOIN movements m
+                ON a.id = m.account_to OR a.id = m.account_from
+            WHERE a.id = p_account_id 
+        )
+        SELECT account_id, original_amount + SUM(after_movements) AS final_movements
+        FROM movements_summary
+        GROUP BY account_id, original_amount
+    )
+    SELECT COALESCE(SUM(ss.final_movements), 0)
+    INTO balance
+    FROM sum_summary ss;
 
-        * Note: if the account does not have enough money you need to reject this insert and make a rollback for the entire transaction
-    
-    d. Put your answer here if the transaction fails(YES/NO):
-    ```
-        Your answer
-    ```
+    RETURN balance;
+END;
+$$ LANGUAGE plpgsql;
 
-    e. If the transaction fails, make the correction on step _c_ to avoid the failure:
-    ```
-        Your query
-    ```
+DO $$
+DECLARE
+    account1 DOUBLE PRECISION;
+    account2 DOUBLE PRECISION;
+    account_id_a UUID := '3b79e403-c788-495a-a8ca-86ad7643afaf';
+    account_id_b UUID := 'fd244313-36e5-4a17-a27c-f8265bc46590';
+    transfer_amount DOUBLE PRECISION := 50.75;
+    withdrawal_amount DOUBLE PRECISION := 731823.56;
+    partial_withdrawal DOUBLE PRECISION := 20.00;
 
-    f. Once the transaction is correct, make a commit
-    ```
-        Your query
-    ```
+BEGIN
 
-    e. How much money the account `fd244313-36e5-4a17-a27c-f8265bc46590` have:
-    ```
-        Your query
-    ```
+    account1 := get_balance_after_moves(account_id_a);
+    RAISE NOTICE 'Account A balance before transfer: %', account1;
+
+    IF account1 < transfer_amount THEN
+        RAISE EXCEPTION 'Insufficient balance in account %. Current balance: %', account_id_a, account1;
+    END IF;
+---b
+
+    INSERT INTO movements (id, type, account_from, account_to, mount)
+    VALUES (gen_random_uuid(), 'TRANSFER', account_id_a, account_id_b, transfer_amount);
+
+	RAISE NOTICE 'succesfull';
+---c
+
+    account1 := get_balance_after_moves(account_id_a);
+    RAISE NOTICE 'Account A balance after transfer: %', account1;
+
+    /*  d. Put your answer here if the transaction fails(YES/NO): YES */ 
+     IF account1 < withdrawal_amount THEN
+        RAISE NOTICE 'Insufficient balance for withdrawal. Adjusting amount to a portion: %', account1;
+
+/*e. If the transaction fails, make the correction on step _c_ to avoid the failure:*/
+        IF account1 < partial_withdrawal THEN
+            withdrawal_amount := account1;
+        ELSE
+            withdrawal_amount := partial_withdrawal;
+        END IF;
+
+        RAISE NOTICE 'Adjusted withdrawal amount: %', withdrawal_amount;
+    END IF;
+
+    INSERT INTO movements (id, type, account_from, account_to, mount)
+    VALUES (gen_random_uuid(), 'OUT', account_id_a, NULL, withdrawal_amount);
+
+    account1 := get_balance_after_moves(account_id_a);
+    RAISE NOTICE 'Account A balance after withdrawal: %', account1;
+
+    --- f. Once the transaction is correct, make a commit
+
+    RAISE NOTICE 'Transaction successfully';
+    ---e. How much money the account `fd244313-36e5-4a17-a27c-f8265bc46590` have:
+
+	
+    account2 := get_balance_after_moves(account_id_b);
+    RAISE NOTICE 'Final balance of Account B: %', account2;
+
+EXCEPTION
+    WHEN OTHERS THEN
+        RAISE NOTICE 'Transaction failed: %', SQLERRM;
+        ROLLBACK;
+END;
+$$;
 
 
 6. All the movements and the user information with the account `3b79e403-c788-495a-a8ca-86ad7643afaf`
 
 ```
-Your query here
+SELECT 
+    u.name || ' ' || u.last_name full_name,
+    u.id user_id,
+    u.email,
+    a.id,
+    m.mount
+FROM 
+    movements m
+JOIN 
+    accounts a ON a.id = m.account_from OR a.id = m.account_to
+JOIN 
+    users u ON u.id = a.user_id
+WHERE 
+    a.id = '3b79e403-c788-495a-a8ca-86ad7643afaf'
+ORDER BY 
+    m.created_at DESC;
 ```
 
 
 7. The name and email of the user with the highest money in all his/her accounts
 
 ```
-Your query here
+WITH sum_summary AS (
+    WITH movements_summary AS (
+        SELECT
+            a.id AS account_id,
+            a.mount AS original_amount,
+            m.type,
+            CASE
+                WHEN m.type = 'IN' THEN m.mount
+                WHEN m.type NOT IN ('IN', 'TRANSFER') THEN -m.mount
+                WHEN m.type = 'TRANSFER' AND m.account_from = a.id THEN -m.mount
+                WHEN m.type = 'TRANSFER' AND m.account_to = a.id THEN m.mount
+                ELSE 0
+            END AS after_movements
+        FROM
+            accounts a
+        INNER JOIN movements m
+            ON a.id = m.account_to OR a.id = m.account_from
+    )
+    SELECT 
+        account_id, 
+        original_amount + SUM(after_movements) AS final_movements
+    FROM 
+        movements_summary
+    GROUP BY 
+        account_id, original_amount
+)
+SELECT 
+    u.name AS user_name, 
+    u.email AS user_email, 
+    SUM(ss.final_movements) AS highest_balance
+FROM 
+    sum_summary ss
+INNER JOIN 
+    accounts a ON ss.account_id = a.id
+INNER JOIN 
+    users u ON a.user_id = u.id
+GROUP BY 
+    u.id, u.name, u.email
+ORDER BY 
+    total_balance DESC
+LIMIT 1;
 ```
 
 
 8. Show all the movements for the user `Kaden.Gusikowski@gmail.com` order by account type and created_at on the movements table
 
 ```
-Your query here
+select
+	m.id as movement_id,
+	m.mount as amount,
+	m.created_at,
+	a.type as account_type
+from
+	movements m
+inner join 
+    accounts a on
+	a.id = m.account_from
+	or a.id = m.account_to
+inner join 
+    users u on
+	u.id = a.user_id
+where
+	u.email = 'Kaden.Gusikowski@gmail.com'
+order by
+	a.type,
+	m.created_at;
 ```
 
